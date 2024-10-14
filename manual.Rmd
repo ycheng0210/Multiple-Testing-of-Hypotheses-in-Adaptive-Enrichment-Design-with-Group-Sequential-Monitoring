@@ -1,0 +1,282 @@
+---
+title: "Adaptive Enrichment Design with Multiple Endpoints and Interim Monitoring"
+output:
+  html_document:
+    df_print: paged
+date: "2023-08-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(results='asis', echo = TRUE)
+```
+
+# Description 
+
+- This R markdown file provided the example code for running the analysis for an adaptive enrichment design with multiple endpoints and interim monitoring. User can simulate their own design based on features such as **user-defined graph** (for graphical approach), **interim information rates**, **number of endpoints**, **types of variables** (binary or continuous), **randomization ratio** etc.
+
+- The main analysis function (AED_analysis) is included in AED_analysis_function.R. Other auxiliary functions used in the analysis function are included in helper.R. table_visual_fcn.R includes the wrapper functions used to generate tables and figures for multiple scenarios in this file. 
+
+## Function AED_analysis()
+
+The analysis function (AED_analysis) takes the following inputs:\
+
+- nsim: number of simulation 
+- rho: prevalence of subpopulation of interest S
+- sig_level: overall type I error rate
+- n: a list of sample size for each group(control=A,treatment=B) at stage 1 and stage 2. \
+This can be adjusted to satisfy different **randomization ratio and interim information rates**. 
+- var_type: a vector of variable type for the endpoints. The endpoints can be either binary or continuous. 
+- mu_control: a list of mean of the control group A in S or C (complementary subpopulation)
+- delta: a list of effect size in S or C
+- cov.matrix: a covariance matrix for the endpoints
+- thres: a list of threshold of endpoints for subpopulation selection 
+- method: can be one of following: "CTP","Hierarchical","Graphical"
+- graph.matrix: a transition matrix for the graphical approach
+- graph.weights: a vector for specifying the weights of alpha for the graphical approach
+- **User don't need to change the following inputs**
+- stage1_data=NULL: stage1 dataset
+- stage2_data=NULL: stage2 dataset
+- mydata=NULL: temporary dataset 
+- w_1 = NULL: first stage information rates
+- w_2 = NULL: second stage information rates
+
+User can call the analysis function directly with self-specified inputs or can call wrap function to compare multiple testing method (included in next section). 
+```{r, eval=FALSE}
+AED_analysis(nsim, rho, sig_level, n, var_type, mu_control, delta, cov.matrix, thres, method="CTP", graph.matrix, graph.weights, stage1_data=NULL, stage2_data=NULL, mydata=NULL, w_1=NULL, w_2=NULL)
+
+```
+
+# Set-up: NEEDS USER INPUTS
+
+- The following example serves as an example for adaptive enrichment design with 2 endpoints (1 binary 1 continuous), with interim monitoring at 50%
+```{r,message=FALSE,warning=FALSE}
+library(knitr)
+library(tidyverse)
+library(ggplot2)
+library(RColorBrewer)
+library(ggeasy)
+library(gridExtra)
+source("AED_analysis_function.R")
+source("table_visual_fcn.R")
+
+# example general set up
+nsim=1000             # number of simulation
+rho = 0.5           # Prevalence of subgroup S
+sig_level=0.025     # Overall type I error (one-sided testing)
+
+# sample size 
+n = list(
+  "stage1_A" = 100,    #  for stage 1 (in full population F)
+  "stage2_A" = 100,     #  for stage 2 (in full population F or, if enriched, for S)
+  "stage1_B" = 100,    #  for stage 1 (in full population F)
+  "stage2_B" = 100    #  for stage 2 (in full population F or, if enriched, for S)
+)
+
+# variable type
+var_type= c("binary","continuous")
+
+# response rate/mean in the control group
+# more mu can be added to the list (eg.mu3_S,mu3_C) when there are more endpoints
+mu_control = list(
+  # primary outcome: binary
+  "mu_S_E1" = 0.48,      # Probability of response in subgroup S in the control arm
+  "mu_C_E1" = 0.48,      # Probability of response in complement subgroup T in the control arm
+  # secondary outcome: continuous 
+  "mu_S_E2"=0.5,                 # continuous measure in subgroup S in the control arm
+  "mu_C_E2"=0.5                 # continuous measure in complement subgroup T in the control arm
+)
+
+
+corr.12=0.6 # correlation between two outcomes
+sigma.1=sigma.2=0.5 # standard deviation of the latent variable
+
+# generate covariance matrix based on user input of corr, sigma
+cov.matrix= matrix(
+  c(sigma.1^2, sigma.1*sigma.2*corr.12, sigma.1*sigma.2*corr.12, sigma.2^2),2)
+
+
+# delta: effect size
+# more delta can be added to the list (eg.delta_S_E3,delta_C_E3)
+# used can also input more scenarios like this 
+# delta_pwr  = list(
+#   "delta_S_E1"=c(0.1,0,0.15),               
+#   "delta_C_E1"=c(0.1,0.15,0),               
+#   "delta_S_E2"=c(0.1,0,0.15),             
+#   "delta_C_E2"=c(0.1,0.15,0)          
+# )
+
+delta_pwr  = list(
+  "delta_S_E1"=c(0.1,0,0.15,0.15,0.045),               
+  "delta_C_E1"=c(0.1,0.15,0,0,0.045),               
+  "delta_S_E2"=c(0.1,0,0.15, 0.05,0.045),             
+  "delta_C_E2"=c(0.1,0.15,0,0,0.045)          
+)
+# this delta set for checking type 1 error
+delta_t1e  = list(
+  "delta_S_E1"=c(0),               
+  "delta_C_E1"=c(0),               
+  "delta_S_E2"=c(0),             
+  "delta_C_E2"=c(0)          
+)
+
+# threshold for futility stopping 
+thres = list(
+  # binary
+  "thres_E1"= c(0.05), 
+  "thres_E2"=c(0.05)  
+  # user can continues add thres_E3 etc
+)
+
+# Transition matrix G for the graphical approach.
+# 0.5 on the second row first column: 0.5 of H_S_1's alpha will be propagated to H_F_1 after H_S_1 is rejected
+# User can expand the matrix by adding H_F_3, H_S_3 etc.
+graph.matrix <- rbind(
+           H_F_1=c(0, 0, 0.5, 0.5),
+           H_S_1=c(0.5, 0, 0.5, 0),
+           H_F_2=c(0.5, 0.5, 0, 0),
+           H_S_2=c(0.5, 0, 0.5, 0))
+
+# Initial alpha weights for the hypothesis
+# In this case, H_S_1 and H_S_2 are assigned half of the alpha at beginning.
+graph.weights <-  c(0, 0.5, 0, 0.5)
+```
+
+![Similiar graph based on the above transition matrix and weights](graph.png)
+
+# Compare FWER under Global Null
+
+- Running analysis using the wrapper function which can generate datasets for multiple scenarios
+- Data sets containing simulation results will be saved as rdata files.
+```{r,message=FALSE,warning=FALSE}
+# CTP 
+if (!file.exists('res_t1e_CTP.rdata')) {
+  res_t1e_CTP=sim_data(nsim, rho, sig_level, n, var_type, mu_control, delta_t1e, cov.matrix, thres, method="CTP", graph.matrix, graph.weights, stage1_data=NULL, stage2_data=NULL, mydata=NULL, w_1=NULL, w_2=NULL)
+  # save file
+  save(res_t1e_CTP, file = 'res_t1e_CTP.rdata')
+} else {
+  load('res_t1e_CTP.rdata')
+}
+
+# graphical 
+if (!file.exists('res_t1e_graphical.rdata')) {
+res_t1e_graphical=sim_data(nsim, rho, sig_level, n, var_type, mu_control, delta_t1e, cov.matrix, thres, method="Graphical", graph.matrix, graph.weights, stage1_data=NULL, stage2_data=NULL, mydata=NULL, w_1=NULL, w_2=NULL)
+# save file
+save(res_t1e_graphical, file = 'res_t1e_graphical.rdata')
+} else {
+  load('res_t1e_graphical.rdata')
+}
+
+# Hierarchical
+if(!file.exists('res_t1e_hierarchical.rdata')) {
+res_t1e_hierarchical=sim_data(nsim, rho, sig_level, n, var_type, mu_control, delta_t1e, cov.matrix, thres, method="Hierarchical", graph.matrix, graph.weights, stage1_data=NULL, stage2_data=NULL, mydata=NULL, w_1=NULL, w_2=NULL)
+# save file
+save(res_t1e_hierarchical, file = 'res_t1e_hierarchical.rdata')
+} else {
+  load('res_t1e_hierarchical.rdata')
+}
+```
+
+## Tables for Interim Decision,FWER and Average Sample Size 
+
+### CTP
+```{r,message=F,warning=F,echo=FALSE}
+out_tab_t1e_CTP=out.tab.t1e(res_t1e_CTP,delta_t1e,nsim,n)
+```
+
+### Graphical
+```{r,message=F,warning=F,echo=FALSE}
+out_tab_t1e_graphical=out.tab.t1e(res_t1e_graphical,delta_t1e,nsim,n)
+```
+
+### Hierarchical
+```{r,message=F,warning=F,echo=FALSE}
+out_tab_t1e_hierarchical=out.tab.t1e(res_t1e_hierarchical,delta_t1e,nsim,n)
+
+```
+
+
+## Visualization
+
+### FWER under Global Null
+```{r,message=F,warning=F,echo=FALSE}
+plot=FWER.visual(out_tab_t1e_CTP,out_tab_t1e_graphical,out_tab_t1e_hierarchical)
+plot
+```
+
+### Average sample size 
+```{r,message=F,warning=F,echo=FALSE}
+plot=samplesize_visual(out_tab_t1e_CTP,out_tab_t1e_graphical,out_tab_t1e_hierarchical)
+plot
+```
+
+# Compare Power, Early Efficacy and Average Sample size
+
+- Similarly, data sets containing simulation results will be saved as rdata files.
+```{r,message=FALSE,warning=FALSE,echo=FALSE}
+# CTP 
+if (!file.exists('res_pwr_CTP.rdata')) {
+res_pwr_CTP=sim_data(nsim, rho, sig_level, n, var_type, mu_control, delta_pwr, cov.matrix, thres, method="CTP", graph.matrix, graph.weights, stage1_data=NULL, stage2_data=NULL, mydata=NULL, w_1=NULL, w_2=NULL)
+save(res_pwr_CTP, file = 'res_pwr_CTP.rdata')
+} else {
+  load('res_pwr_CTP.rdata')
+}
+
+# graphical 
+if (!file.exists('res_pwr_graphical.rdata')) {
+res_pwr_graphical=sim_data(nsim, rho, sig_level, n, var_type, mu_control, delta_pwr, cov.matrix, thres, method="Graphical", graph.matrix, graph.weights, stage1_data=NULL, stage2_data=NULL, mydata=NULL, w_1=NULL, w_2=NULL)
+save(res_pwr_graphical, file = 'res_pwr_graphical.rdata')
+} else {
+  load('res_pwr_graphical.rdata')
+}
+
+# Hierarchical
+if (!file.exists('res_pwr_hierarchical.rdata')) {
+res_pwr_hierarchical=sim_data(nsim, rho, sig_level, n, var_type, mu_control, delta_pwr, cov.matrix, thres, method="Hierarchical", graph.matrix, graph.weights, stage1_data=NULL, stage2_data=NULL, mydata=NULL, w_1=NULL, w_2=NULL)
+save(res_pwr_hierarchical, file = 'res_pwr_hierarchical.rdata')
+} else {
+  load('res_pwr_hierarchical.rdata')
+}
+```
+
+## Tables for Interim Decision,Early Efficacy, Average Sample Size and Power 
+```{r,message=F,warning=F,echo=FALSE}
+out_tab_pwr_CTP=out.tab.pwr(res_pwr_CTP,delta_pwr,nsim,n)
+out_tab_pwr_graphical=out.tab.pwr(res_pwr_graphical,delta_pwr,nsim,n)
+out_tab_pwr_hierarchical=out.tab.pwr(res_pwr_hierarchical,delta_pwr,nsim,n)
+```
+
+## Visualization
+
+### Power for Rejecting All Hypotheses for S Subpopulation
+```{r,message=F,warning=F,echo=FALSE}
+plot=power.S.visual(out_tab_pwr_CTP,out_tab_pwr_graphical,out_tab_pwr_hierarchical)
+plot
+
+```
+
+### Power for Rejecting All Hypotheses for F population
+```{r,message=F,warning=F,echo=FALSE}
+plot=power.F.visual(out_tab_pwr_CTP,out_tab_pwr_graphical,out_tab_pwr_hierarchical)
+plot
+```
+
+### Power for At Least Successfully Identify 1 (Sub)Population(s)
+```{r,message=F,warning=F,echo=FALSE}
+plot=power.any.visual(out_tab_pwr_CTP,out_tab_pwr_graphical,out_tab_pwr_hierarchical)
+plot
+```
+
+### Early Efficacy Stop (S only F only and S&F )
+```{r,message=F,warning=F,echo=FALSE}
+plot=eff_visual(out_tab_pwr_CTP,out_tab_pwr_graphical,out_tab_pwr_hierarchical)
+plot
+
+```
+
+### Average sample size 
+```{r,message=F,warning=F,echo=FALSE}
+plot=samplesize_visual(out_tab_pwr_CTP,out_tab_pwr_graphical,out_tab_pwr_hierarchical)
+plot
+
+```
+
