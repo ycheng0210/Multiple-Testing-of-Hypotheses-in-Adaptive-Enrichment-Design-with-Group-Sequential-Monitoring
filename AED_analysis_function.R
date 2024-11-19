@@ -270,7 +270,7 @@ AED_analysis <- function(nsim, rho, sig_level, n, var_type, mu_control, delta,
   ##-------------------------------------------------------
   foreach (i= 1:nsim)%do% {
     #source("helper.R",local = TRUE)
-    set.seed(2i)
+    set.seed(2*i)
     print(i)
     
     mydata<-stage1_data_generation( rho, n, mu_control, delta, cov.matrix, 
